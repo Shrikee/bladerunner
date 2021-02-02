@@ -1,0 +1,22 @@
+# dependencies
+node_modules
+package-lock.json
+yarn.lock
+
+# editor
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# testing
+.coverage_contracts
+.coverage_artifacts
+
+# misc
+.DS_Store
+._*
+
+# environment variables
+.env
