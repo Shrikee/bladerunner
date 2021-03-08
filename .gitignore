@@ -20,3 +20,6 @@ yarn.lock
 
 # environment variables
 .env
+
+# logs
+errors.log

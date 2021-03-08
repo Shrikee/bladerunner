@@ -2,7 +2,7 @@ const uniFactoryAbi = require('../../../abi/uniFactory.json');
 const uniPairAbi = require('../../../abi/uniPair.json');
 const sushiFactory = require('../../../abi/sushiFactory.json');
 const sushiPair = require('../../../abi/sushiPair.json');
-const { Uniswap } = require('../../defi-platforms/');
+const { Uniswap } = require('../../defi-platforms');
 
 class UniSushiStrategy extends Uniswap {
   constructor(web3) {

@@ -2,11 +2,11 @@ require('dotenv').config();
 const Web3 = require('web3');
 const pRetry = require('p-retry');
 const winston = require('winston');
+const delay = require('delay');
 
-const web3 = new Web3(process.env.INFURA_WS);
+const web3 = new Web3(process.env.ETH_NODE);
 
-const { AlphaFinance, OneInch } = require('./src/contract-decoders');
-const { Uniswap } = require('./src/defi-platforms');
+const { AlphaFinance } = require('./src/contract-decoders');
 const Telegram = require('./src/telegram');
 
 const pools = {
@@ -18,17 +18,13 @@ const pools = {
 };
 
 const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.json(),
   transports: [
-    new winston.transports.File({ filename: 'error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'tx.log' }),
+    new winston.transports.Console(),
+    new winston.transports.File({ level: 'error', filename: 'errors.log' }),
   ],
 });
 
-const alphaFinanceDecoder = new AlphaFinance(web3);
-const oneInchDecoder = new OneInch(web3);
-const uniswap = new Uniswap();
+const alphaFinanceDecoder = new AlphaFinance(web3, logger);
 const telegram = new Telegram();
 
 async function getData() {
@@ -37,52 +33,46 @@ async function getData() {
   let txCounter = 0;
   ws.on('data', async data => {
     txCounter++;
-    try {
-      await pRetry(
-        async () => {
-          const tx = await web3.eth.getTransaction(data);
 
-          if (tx === null) {
-            throw new Error('tx is null');
+    await pRetry(
+      async () => {
+        const tx = await web3.eth.getTransaction(data);
+
+        if (tx === null) {
+          await delay(3000);
+          throw new Error('tx is null');
+        }
+
+        if (tx.to === pools.alphaFin) {
+          const txObj = await alphaFinanceDecoder.decodeInput(tx);
+
+          if (txObj) {
+            try {
+              await telegram.sendMessage(txObj);
+            } catch (error) {
+              logger.error(error);
+            }
           }
-
-          if (tx.to === pools.alphaFin) {
-            const txObj = await alphaFinanceDecoder.decodeInput(tx);
-
-            await telegram.sendMessage(txObj);
-
-            return logger.log('info', txObj);
-          }
-
-          if (tx.to === pools.oneInch) {
-            const txObj = await oneInchDecoder.decodeInput(tx);
-
-            await telegram.sendMessage(txObj);
-
-            return logger.log('info', txObj);
-          }
+        }
+      },
+      {
+        onFailedAttempt: error => {
+          logger.info(
+            `Attempt ${error.attemptNumber} failed. There are ${error.retriesLeft} retries left.`,
+          );
+          logger.info(`Tx counter: ${txCounter}`);
         },
-        {
-          onFailedAttempt: error => {
-            console.log(
-              `Attempt ${error.attemptNumber} failed. There are ${error.retriesLeft} retries left.`,
-            );
-            console.log('Tx counter: ' + txCounter);
-          },
-          retries: 12,
-        },
-      );
-    } catch (error) {
-      console.log(error);
-    }
+        retries: 10,
+      },
+    );
   });
 }
+
 async function testData(txHash = null) {
   let txH = txHash;
   let txObj;
   if (txH === null) {
-    txH = '0x3c4dcc0afe756a02c516d0e77ea5ffa9f4ac43b188b55be9a14e5ba5bbde0890';
-    // '0xb36a20267ae76242d93a164b9f6b425d8de33d21f7a61f974980489685f2e5bf';
+    txH = '0xd047ce8ca0dfaa7f70473c728a44b1c65b4f73fde61aaafacda122b828a0ae25';
   }
   const tx = await web3.eth.getTransaction(txH);
 
@@ -90,22 +80,12 @@ async function testData(txHash = null) {
     txObj = await alphaFinanceDecoder.decodeInput(tx);
   }
 
-  if (tx.to === pools.oneInch) {
-    txObj = await oneInchDecoder.decodeInput(tx);
+  if (txObj) {
+    await telegram.sendMessage(txObj);
+
+    return logger.log('info', txObj);
   }
-
-  await telegram.sendMessage(txObj);
-
-  return logger.log('info', txObj);
 }
 
-async function testIt() {
-  const { txHash } = require('./testData/testHashes.json');
-  txHash.map(async txHash => {
-    await testData(txHash);
-  });
-}
-
-// testIt();
-testData();
-// getData();
+getData();
+// testData();

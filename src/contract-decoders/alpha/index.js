@@ -1,4 +1,4 @@
-const UniSushiStrategy = require('./uniswapStrategy');
+const UniSushiStrategy = require('./uniSushiStrategy');
 
 module.exports = {
   UniSushiStrategy,

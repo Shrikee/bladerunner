@@ -1,34 +1,20 @@
 const abiDecoder = require('abi-decoder');
 const BN = require('bn.js');
 
+const AbstractDecoder = require('./abstract-decoder');
 const alphaFinanceAbi = require('../../abi/alphaFin.json');
-
+const sushiContractsAddresses = require('./alpha/assets/sushiswap/strategyContractsAdresses.json');
+const uniContractsAddresses = require('./alpha/assets/uniswap/strategyContractsAddresses.json');
 const { UniSushiStrategy } = require('./alpha');
 
 const UNI = 'uni';
 const SUSHI = 'sushi';
 
-class AlphaFinance {
-  constructor(web3) {
-    this.web3 = web3;
+class AlphaFinance extends AbstractDecoder {
+  constructor(web3, logger) {
+    super(web3, logger);
 
     this.targetAddress = '0x67B66C99D3Eb37Fa76Aa3Ed1ff33E8e39F0b9c7A';
-
-    this.strategyAddTwoSidesOptimalUniswap =
-      '0xa57F64458D85073911263E4E92C9913805C45d0d';
-    this.strategyAddTwoSidesOptimalUniswap2 =
-      '0xf98eD25a82F1731578E016fA0145FFfa0Dc517C3';
-    this.strategyAddTwoSidesOptimalUniswap3 =
-      '0x29797c05706689b41d8024CB42996aB36B5bC815';
-    this.strategyAddTwoSidesOptimalSushi =
-      '0x3721dCD1C1793f945006a967A91Da81562d1B588';
-    this.strategyAddTwoSidesOptimalSushi2 =
-      '0x5f8C47B5613B58a2dEC567C7b0F5BEd9022a0520';
-    this.strategyAddTwoSidesOptimalSushi3 =
-      '0x37BCEb01eaFdDfe8D36FdE3D3b6A380f7e1a452C';
-    this.strategyAddTwoSidesOptimalSushi4 =
-      '0x68076327B91Ed5AaCe79A0Ab26015EA930810d72';
-
     this.uniSushiStrategy = new UniSushiStrategy(web3);
 
     abiDecoder.addABI(alphaFinanceAbi);
@@ -37,7 +23,12 @@ class AlphaFinance {
   async decodeInput(tx) {
     const ethSentWithTx = tx.value;
     const decodedInput = await abiDecoder.decodeMethod(tx.input);
-    const loanETH = decodedInput.params[2].value;
+    let loanETH = 0;
+
+    if (decodedInput.params[2].value) {
+      loanETH = decodedInput.params[2].value;
+    }
+
     const totalEthToSwap = new BN(ethSentWithTx)
       .add(new BN(loanETH))
       .toString();
@@ -47,14 +38,10 @@ class AlphaFinance {
     );
 
     if (
-      strategyRaw[0] === this.strategyAddTwoSidesOptimalUniswap ||
-      strategyRaw[0] === this.strategyAddTwoSidesOptimalUniswap2 ||
-      strategyRaw[0] === this.strategyAddTwoSidesOptimalUniswap3
+      uniContractsAddresses.filter(item => item === strategyRaw[0]).length > 0
     ) {
-      const strategy = this.web3.eth.abi.decodeParameters(
-        ['address', 'uint256', 'uint256'],
-        strategyRaw[1],
-      );
+      const strategy = this.getStrategy(strategyRaw[1]);
+
       const uniPairContract = await this.uniSushiStrategy.getPairContract(
         strategy[0],
         UNI,
@@ -63,12 +50,25 @@ class AlphaFinance {
         uniPairContract,
       );
 
-      const swapAmount = await this.optimalSwapAmount(
-        totalEthToSwap,
-        strategy[1],
-        reserves._reserve1,
-        reserves._reserve0,
-      );
+      const token0 = await uniPairContract.methods.token0().call();
+
+      let swapAmount;
+
+      if (token0 === this.uniSushiStrategy.wethAddress) {
+        swapAmount = await this.optimalSwapAmount(
+          totalEthToSwap,
+          strategy[1],
+          reserves._reserve0,
+          reserves._reserve1,
+        );
+      } else {
+        swapAmount = await this.optimalSwapAmount(
+          totalEthToSwap,
+          strategy[1],
+          reserves._reserve1,
+          reserves._reserve0,
+        );
+      }
 
       const pairPriceAfterTrade = await this.uniSushiStrategy.pairPrice(
         strategy[0],
@@ -91,38 +91,46 @@ class AlphaFinance {
         pairPriceAfterTrade,
       };
 
-      txObj = this.processData(txObj);
+      txObj = this.processData(txObj, 'uniswap');
 
       return txObj;
     }
 
     if (
-      strategyRaw[0] === this.strategyAddTwoSidesOptimalSushi ||
-      strategyRaw[0] === this.strategyAddTwoSidesOptimalSushi2 ||
-      strategyRaw[0] === this.strategyAddTwoSidesOptimalSushi3 ||
-      strategyRaw[0] === this.strategyAddTwoSidesOptimalSushi4
+      sushiContractsAddresses.filter(item => item === strategyRaw[0]).length > 0
     ) {
-      const strategy = this.web3.eth.abi.decodeParameters(
-        ['address', 'uint256', 'uint256'],
-        strategyRaw[1],
-      );
-
+      const strategy = this.getStrategy(strategyRaw[1]);
+      // (uint256 ethReserve, uint256 fReserve) = lpToken.token0() == weth ? (r0, r1) : (r1, r0);
       const sushiPairContract = await this.uniSushiStrategy.getPairContract(
         strategy[0],
         SUSHI,
       );
+
       const reserves = await this.uniSushiStrategy.getTradingPairReserves(
         sushiPairContract,
       );
 
-      const swapAmount = await this.optimalSwapAmount(
-        totalEthToSwap,
-        strategy[1],
-        reserves._reserve1,
-        reserves._reserve0,
-      );
+      const token0 = await sushiPairContract.methods.token0().call();
 
-      return {
+      let swapAmount;
+
+      if (token0 === this.uniSushiStrategy.wethAddress) {
+        swapAmount = await this.optimalSwapAmount(
+          totalEthToSwap,
+          strategy[1],
+          reserves._reserve0,
+          reserves._reserve1,
+        );
+      } else {
+        swapAmount = await this.optimalSwapAmount(
+          totalEthToSwap,
+          strategy[1],
+          reserves._reserve1,
+          reserves._reserve0,
+        );
+      }
+
+      let txObj = {
         targetAddress: this.targetAddress,
         etherscanLink: `https://etherscan.io/tx/${tx.hash}`,
         decodedInput,
@@ -136,22 +144,36 @@ class AlphaFinance {
         tokenAddress: strategy[0],
         ethInTx: this.web3.utils.fromWei(tx.value),
       };
+
+      txObj = this.processData(txObj, 'sushiswap');
+
+      return txObj;
     }
+    this.logger.error({ tx, strategyRaw });
   }
 
-  processData(data) {
+  processData(data, provider) {
     if (data) {
       const ethLoan = this.web3.utils.fromWei(
         data.decodedInput.params[2].value,
       );
-      return `AlphaFinance, Uniswap, StrategyAddTwoSidesOptimal:
-      Loan ETH: ${ethLoan} Amount to swap: ${data.toSwap.swapAmt}${
-        data.toSwap.isToken
-          ? `token https://etherscan.io/token/${data.tokenAddress}`
-          : 'ETH'
+      return `AlphaFinance, ${
+        provider === 'uniswap' ? 'Uniswap' : 'SushiSwap '
+      }, StrategyAddTwoSidesOptimal:
+      Loan ETH: ${ethLoan}
+      Amount to swap: ${data.toSwap.swapAmt}${
+        data.toSwap.isReversed
+          ? ` tokens https://etherscan.io/token/${data.tokenAddress}`
+          : ' ETH'
       }
-      Execution price: ${data.pairPriceAfterTrade.executionPrice}
-      NextMiddle price: ${data.pairPriceAfterTrade.nextMidPrice}
+
+      ${
+        data.pairPriceAfterTrade
+          ? `Execution price: ${data.pairPriceAfterTrade.executionPrice}
+      NextMiddle price: ${data.pairPriceAfterTrade.nextMidPrice}`
+          : ''
+      }
+
       Swap token: https://etherscan.io/token/${data.tokenAddress}
       Transaction: ${data.etherscanLink}
     `;
@@ -160,26 +182,30 @@ class AlphaFinance {
 
   async optimalSwapAmount(amtA, amtB, resA, resB) {
     let swapAmt;
-    let isToken;
+    let isReversed;
 
-    const ethAmount = new BN(Math.trunc(this.web3.utils.fromWei(amtA)));
-    const tAmount = new BN(Math.trunc(this.web3.utils.fromWei(amtB)));
-    const resEth = new BN(Math.trunc(this.web3.utils.fromWei(resA)));
-    const resT = new BN(Math.trunc(this.web3.utils.fromWei(resB)));
+    const ethAmount = new BN(amtA);
+    const tAmount = new BN(amtB);
+    const resEth = new BN(resA);
+    const resT = new BN(resB);
 
     if (ethAmount.mul(resT) >= tAmount.mul(resEth)) {
-      swapAmt = this._optimalDeposit(ethAmount, tAmount, resEth, resT);
-      isToken = false;
+      swapAmt = this.web3.utils.fromWei(
+        this._optimalDeposit(ethAmount, tAmount, resEth, resT),
+      );
+      isReversed = false;
     } else {
-      swapAmt = this._optimalDeposit(tAmount, ethAmount, resT, resEth);
-      isToken = true;
+      swapAmt = this.web3.utils.fromWei(
+        this._optimalDeposit(tAmount, ethAmount, resT, resEth),
+      );
+      isReversed = true;
     }
-    return { swapAmt, isToken };
+    return { swapAmt, isReversed };
   }
 
   _optimalDeposit(amtA, amtB, resA, resB) {
     if (!amtA.mul(resB).gte(amtB.mul(resA))) {
-      return null;
+      throw new Error('Reversed');
     }
 
     const a = new BN(997);
@@ -194,13 +220,20 @@ class AlphaFinance {
     );
     const d = new BN(a.mul(c).mul(new BN(4)));
     let e = new BN(b.mul(b).add(d));
-    e = Math.sqrt(e.toString());
-    e = new BN(Math.trunc(e));
+    e = BigInt(Math.sqrt(e.toString()));
+    e = new BN(e.toString());
 
     const numerator = e.sub(b);
     const denominator = new BN(a.mul(new BN(2)));
 
     return numerator.div(denominator).toString();
+  }
+
+  getStrategy(rawStrategy) {
+    return this.web3.eth.abi.decodeParameters(
+      ['address', 'uint256', 'uint256'],
+      rawStrategy,
+    );
   }
 }
 
