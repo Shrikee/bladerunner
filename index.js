@@ -5,8 +5,9 @@ const winston = require('winston');
 const delay = require('delay');
 
 const web3 = new Web3(process.env.ETH_NODE);
+const web3Ropsten = new Web3(process.env.INFURA_ROPSTEN);
 
-const { AlphaFinance } = require('./src/contract-decoders');
+const { AlphaFinance, Tokenlon } = require('./src/contract-decoders');
 const Telegram = require('./src/telegram');
 
 const pools = {
@@ -25,6 +26,7 @@ const logger = winston.createLogger({
 });
 
 const alphaFinanceDecoder = new AlphaFinance(web3, logger);
+const tokenlonDecoder = new Tokenlon(web3, web3Ropsten, logger);
 const telegram = new Telegram();
 
 async function getData() {
@@ -54,6 +56,18 @@ async function getData() {
             }
           }
         }
+
+        if (tx.to === pools.tokenlon) {
+          const txObj = await tokenlonDecoder.decodeInput(tx);
+
+          if (txObj) {
+            try {
+              await telegram.sendMessage(`TokenLon: ${JSON.stringify(txObj)}`);
+            } catch (error) {
+              logger.error(error);
+            }
+          }
+        }
       },
       {
         onFailedAttempt: error => {
@@ -64,24 +78,29 @@ async function getData() {
         },
         retries: 10,
       },
-    );
+    ).catch(e => {
+      console.log(e);
+    });
   });
 }
 
 async function testData(txHash = null) {
-  let txH = txHash;
   let txObj;
-  if (txH === null) {
-    txH = '0xd047ce8ca0dfaa7f70473c728a44b1c65b4f73fde61aaafacda122b828a0ae25';
+  if (txHash === null) {
+    txHash =
+      '0x0500de7fe1b4deeaa37ffdd65e93d39bd733bb954b2d0804add3513550ec70fa'; // to PMM
+    // '0xa11609a5073a4404ccb5814d4ede00400f27ee2b18221046331d37373222e10c'; // to AMM
   }
-  const tx = await web3.eth.getTransaction(txH);
+  const tx = await web3.eth.getTransaction(txHash);
 
   if (tx.to === pools.alphaFin) {
     txObj = await alphaFinanceDecoder.decodeInput(tx);
   }
 
+  txObj = await tokenlonDecoder.decodeInput(tx);
+
   if (txObj) {
-    await telegram.sendMessage(txObj);
+    await telegram.sendMessage(`TokenLon: ${JSON.stringify(txObj)}`);
 
     return logger.log('info', txObj);
   }
